@@ -1,8 +1,11 @@
+# text-autocomplete/src/lstm_train.py
+
 import os
 from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
 from transformers import AutoTokenizer
 
 from src.lstm_model import LSTMNextToken
@@ -30,28 +33,28 @@ class TrainConfig:
     save_dir: str = "models"
     save_name: str = "lstm_next_token.pt"
 
+    # графики
+    plot_path: str = "models/loss_curves.png"  # "" чтобы не сохранять в файл
 
-def train_epoch(model, loader, optimizer, criterion, device, pad_id: int):
+
+def train_epoch(model, loader, optimizer, criterion, device, grad_clip: float):
     model.train()
     total_loss = 0.0
 
     for batch in loader:
-        x = batch["input_ids"].to(device)     # [B, T]
-        y = batch["targets"].to(device)       # [B, T]
-        lengths = batch["lengths"].to(device) # [B]
+        x = batch["input_ids"].to(device)      # [B, T]
+        y = batch["targets"].to(device)        # [B, T]
+        lengths = batch["lengths"].to(device)  # [B]
 
         optimizer.zero_grad()
+        logits = model(x, lengths=lengths)     # [B, T, V]
 
-        logits = model(x, lengths=lengths)    # [B, T, V]
-
-        # CrossEntropyLoss ожидает [N, C] и [N]
         loss = criterion(
             logits.reshape(-1, logits.size(-1)),
             y.reshape(-1),
         )
-
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
         optimizer.step()
 
         total_loss += loss.item()
@@ -60,7 +63,7 @@ def train_epoch(model, loader, optimizer, criterion, device, pad_id: int):
 
 
 @torch.no_grad()
-def evaluate(model, loader, criterion, device):
+def evaluate_loss(model, loader, criterion, device):
     model.eval()
     total_loss = 0.0
 
@@ -77,6 +80,24 @@ def evaluate(model, loader, criterion, device):
         total_loss += loss.item()
 
     return total_loss / max(1, len(loader))
+
+
+def plot_losses(train_losses, val_losses, save_path: str | None = None):
+    epochs = list(range(1, len(train_losses) + 1))
+
+    plt.figure()
+    plt.plot(epochs, train_losses, label="Train Loss")
+    plt.plot(epochs, val_losses, label="Val Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.grid(True)
+
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, bbox_inches="tight", dpi=150)
+
+    plt.show()
 
 
 def main(cfg: TrainConfig):
@@ -103,19 +124,31 @@ def main(cfg: TrainConfig):
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
-
-    # игнорируем паддинг в targets
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
 
-    best_val = float("inf")
     os.makedirs(cfg.save_dir, exist_ok=True)
     save_path = os.path.join(cfg.save_dir, cfg.save_name)
 
-    for epoch in range(cfg.epochs):
-        train_loss = train_epoch(model, train_loader, optimizer, criterion, device, pad_id)
-        val_loss = evaluate(model, val_loader, criterion, device)
+    train_losses: list[float] = []
+    val_losses: list[float] = []
 
-        print(f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+    best_val = float("inf")
+
+    for epoch in range(cfg.epochs):
+        train_loss = train_epoch(
+            model=model,
+            loader=train_loader,
+            optimizer=optimizer,
+            criterion=criterion,
+            device=device,
+            grad_clip=cfg.grad_clip,
+        )
+        val_loss = evaluate_loss(model, val_loader, criterion, device)
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+
+        print(f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f} | Val Loss = {val_loss:.4f}")
 
         if val_loss < best_val:
             best_val = val_loss
@@ -130,6 +163,10 @@ def main(cfg: TrainConfig):
                 save_path,
             )
             print(f"Saved best model to: {save_path}")
+
+    # графики после обучения
+    plot_path = cfg.plot_path if cfg.plot_path.strip() else None
+    plot_losses(train_losses, val_losses, save_path=plot_path)
 
 
 if __name__ == "__main__":
