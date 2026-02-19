@@ -1,5 +1,3 @@
-# text-autocomplete/src/lstm_train.py
-
 import os
 from dataclasses import dataclass
 
@@ -10,31 +8,11 @@ from transformers import AutoTokenizer
 
 from src.lstm_model import LSTMNextToken
 from src.next_token_dataset import make_dataloader
+import yaml
 
-
-@dataclass
-class TrainConfig:
-    model_name: str = "bert-base-uncased"
-    train_csv: str = "data/train.csv"
-    val_csv: str = "data/val.csv"
-
-    batch_size: int = 64
-    max_len: int = 128
-
-    emb_dim: int = 128
-    hidden_dim: int = 256
-    num_layers: int = 1
-    dropout: float = 0.1
-
-    lr: float = 3e-3
-    epochs: int = 10
-    grad_clip: float = 1.0
-
-    save_dir: str = "models"
-    save_name: str = "lstm_next_token.pt"
-
-    # графики
-    plot_path: str = "models/loss_curves.png"  # "" чтобы не сохранять в файл
+def load_yaml(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 def train_epoch(model, loader, optimizer, criterion, device, grad_clip: float):
@@ -47,7 +25,7 @@ def train_epoch(model, loader, optimizer, criterion, device, grad_clip: float):
         lengths = batch["lengths"].to(device)  # [B]
 
         optimizer.zero_grad()
-        logits = model(x, lengths=lengths)     # [B, T, V]
+        logits, _ = model(x, lengths=lengths)     # [B, T, V]
 
         loss = criterion(
             logits.reshape(-1, logits.size(-1)),
@@ -72,7 +50,7 @@ def evaluate_loss(model, loader, criterion, device):
         y = batch["targets"].to(device)
         lengths = batch["lengths"].to(device)
 
-        logits = model(x, lengths=lengths)
+        logits, _ = model(x, lengths=lengths)
         loss = criterion(
             logits.reshape(-1, logits.size(-1)),
             y.reshape(-1),
@@ -100,48 +78,66 @@ def plot_losses(train_losses, val_losses, save_path: str | None = None):
     plt.show()
 
 
-def main(cfg: TrainConfig):
+def main(cfg: dict):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
+    model_name = cfg["tokenizer"]["model_name"]
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    eos_id = tokenizer.eos_token_id
+    
     pad_id = tokenizer.pad_token_id
     vocab_size = tokenizer.vocab_size
 
+    train_csv = cfg["data"]["train_csv"]
+    val_csv = cfg["data"]["val_csv"]
+
+    batch_size = int(cfg["train"]["batch_size"])
+    max_len = int(cfg["train"]["max_len"])
+
     _, train_loader = make_dataloader(
-        cfg.train_csv, batch_size=cfg.batch_size, shuffle=True, max_len=cfg.max_len, pad_id=pad_id
+        train_csv, batch_size=batch_size, shuffle=True, max_len=max_len, pad_id=pad_id
     )
     _, val_loader = make_dataloader(
-        cfg.val_csv, batch_size=cfg.batch_size, shuffle=False, max_len=cfg.max_len, pad_id=pad_id
+        val_csv, batch_size=batch_size, shuffle=False, max_len=max_len, pad_id=pad_id
     )
 
+    model_cfg = cfg["model"]
     model = LSTMNextToken(
         vocab_size=vocab_size,
-        emb_dim=cfg.emb_dim,
-        hidden_dim=cfg.hidden_dim,
-        num_layers=cfg.num_layers,
-        dropout=cfg.dropout,
+        emb_dim=int(model_cfg["emb_dim"]),
+        hidden_dim=int(model_cfg["hidden_dim"]),
+        num_layers=int(model_cfg["num_layers"]),
+        dropout=float(model_cfg["dropout"]),
         pad_id=pad_id,
+        max_len=max_len,
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    lr = float(cfg["train"]["lr"])
+    epochs = int(cfg["train"]["epochs"])
+    grad_clip = float(cfg["train"]["grad_clip"])
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
 
-    os.makedirs(cfg.save_dir, exist_ok=True)
-    save_path = os.path.join(cfg.save_dir, cfg.save_name)
+    save_dir = cfg["save"]["save_dir"]
+    save_name = cfg["save"]["save_name"]
+    plot_path = cfg["save"]["plot_path"]
+
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, save_name)
 
     train_losses: list[float] = []
     val_losses: list[float] = []
-
     best_val = float("inf")
 
-    for epoch in range(cfg.epochs):
+    for epoch in range(epochs):
         train_loss = train_epoch(
             model=model,
             loader=train_loader,
             optimizer=optimizer,
             criterion=criterion,
             device=device,
-            grad_clip=cfg.grad_clip,
+            grad_clip=grad_clip,
         )
         val_loss = evaluate_loss(model, val_loader, criterion, device)
 
@@ -155,19 +151,20 @@ def main(cfg: TrainConfig):
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
-                    "config": cfg.__dict__,
+                    "config": cfg,          # сохраняем ВЕСЬ yaml как dict
                     "pad_id": pad_id,
                     "vocab_size": vocab_size,
-                    "model_name": cfg.model_name,
+                    "model_name": model_name,
                 },
                 save_path,
             )
             print(f"Saved best model to: {save_path}")
 
-    # графики после обучения
-    plot_path = cfg.plot_path if cfg.plot_path.strip() else None
-    plot_losses(train_losses, val_losses, save_path=plot_path)
+    plot_losses(train_losses, val_losses, save_path=plot_path if str(plot_path).strip() else None)
+
 
 
 if __name__ == "__main__":
-    main(TrainConfig())
+    cfg = load_yaml("configs/config.yaml")
+    main(cfg)
+

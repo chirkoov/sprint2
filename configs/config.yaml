@@ -1,0 +1,24 @@
+tokenizer:
+  model_name: bert-base-uncased
+
+data:
+  train_csv: data/train.csv
+  val_csv: data/val.csv
+
+train:
+  batch_size: 256
+  max_len: 256
+  lr: 0.001
+  epochs: 10
+  grad_clip: 1.0
+
+model:
+  emb_dim: 128
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.1
+
+save:
+  save_dir: models
+  save_name: lstm_next_token.pt
+  plot_path: models/loss_curves.png
