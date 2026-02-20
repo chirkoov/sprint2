@@ -4,19 +4,13 @@ from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
 
-def _parse_input_ids(s: str) -> list[int]:
-    # input_ids в csv сохранены как строка чисел через пробел
+def _parse_input_ids(s: str) -> list[int]: # input_ids в csv сохранены как строка чисел через пробел
     if pd.isna(s):
         return []
     return [int(x) for x in str(s).strip().split() if x]
 
 
 class NextTokenDataset(Dataset):
-    """
-    Для каждой последовательности токенов t0..tN строим:
-    X = t0..tN-1
-    Y = t1..tN
-    """
     def __init__(self, csv_path: str, max_len: int = 256):
         self.df = pd.read_csv(csv_path)
         self.max_len = max_len
@@ -27,10 +21,9 @@ class NextTokenDataset(Dataset):
     def __getitem__(self, idx: int):
         ids = _parse_input_ids(self.df.loc[idx, "input_ids"])
 
-        # ограничим длину: нужно минимум 2 токена, чтобы сделать сдвиг
         ids = ids[: self.max_len]
         if len(ids) < 2:
-            ids = ids + [0]  # чтобы не падать; дальше сдвиг даст длину >= 1
+            ids = ids + [0]  
 
         x = torch.tensor(ids[:-1], dtype=torch.long)
         y = torch.tensor(ids[1:], dtype=torch.long)

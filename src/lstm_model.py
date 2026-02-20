@@ -38,28 +38,23 @@ class LSTMNextToken(nn.Module):
         self.fc = nn.Linear(hidden_dim, vocab_size)
 
     def forward(self, input_ids: torch.Tensor, lengths: torch.Tensor | None = None, hidden=None):
-        """
-        Возвращает (logits, hidden_state)
-        """
-        emb = self.embedding(input_ids)  # [B, T, E]
+        
+        emb = self.embedding(input_ids)  
 
         if lengths is not None:
-            # Режим обучения (с использованием pack_padded_sequence)
             packed = pack_padded_sequence(
                 emb,
                 lengths.cpu(),
                 batch_first=True,
                 enforce_sorted=False,
             )
-            # hidden можно передать, даже если используем packed
             packed_out, hidden = self.lstm(packed, hidden)
-            out, _ = pad_packed_sequence(packed_out, batch_first=True)  # [B, T, H]
+            out, _ = pad_packed_sequence(packed_out, batch_first=True)  
         else:
-            # Режим генерации или обычный проход
-            out, hidden = self.lstm(emb, hidden)  # [B, T, H]
+            out, hidden = self.lstm(emb, hidden)
 
         out = self.dropout(out)
-        logits = self.fc(out)  # [B, T, V]
+        logits = self.fc(out)  
         
         return logits, hidden
 
@@ -79,34 +74,16 @@ class LSTMNextToken(nn.Module):
         seq = input_ids.to(device)
 
         self.eval()
-
-        # 1. "Прогреваем" LSTM на всем промпте, чтобы получить начальный hidden state
-        # Нам не нужны логиты промпта, только скрытое состояние после него
         _, hidden = self(seq)
-        
-        # Последний токен промпта — это первый вход для генерации
-        last_token = seq[:, -1:] # [B, 1]
+        last_token = seq[:, -1:] # Последний токен промпта — это первый вход для генерации
 
         for _ in range(num_new_tokens):
-            # 2. Подаем только один токен и прошлое состояние
-            # lengths не нужен, так как длина фиксирована = 1
-            logits, hidden = self(last_token, hidden=hidden) # logits: [B, 1, V]
-            
-            # Берем логиты последнего (единственного) шага
-            next_logits = logits[:, -1, :]        # [B, V]
-            
-            # Жадная стратегия (argmax)
-            next_token = torch.argmax(next_logits, dim=-1, keepdim=True) # [B, 1]
-
-            # Добавляем в общую последовательность
-            seq = torch.cat([seq, next_token], dim=1)
-
-            # Обновляем вход для следующего шага
+            logits, hidden = self(last_token, hidden=hidden) 
+            next_logits = logits[:, -1, :]  # Берем логиты последнего шага
+            next_token = torch.argmax(next_logits, dim=-1, keepdim=True) 
+            seq = torch.cat([seq, next_token], dim=1)  # Добавляем в общую последовательность
             last_token = next_token
-
             if eos_id is not None:
-                # Если сгенерировали EOS (учитываем, что у нас может быть батч)
-                # Для простоты прерываем, если ВСЕ в батче закончили, или игнорируем для батча > 1
                 if (next_token.squeeze(1) == eos_id).all():
                     break
 

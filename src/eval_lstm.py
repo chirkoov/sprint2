@@ -16,8 +16,7 @@ def load_yaml(path: str) -> dict:
 
 
 @torch.no_grad()
-def eval_loss(model, loader, criterion, device):
-    """Считает только средний Loss"""
+def test_val_loss(model, loader, criterion, device):
     model.eval()
     total_loss = 0.0
     
@@ -37,17 +36,15 @@ def eval_loss(model, loader, criterion, device):
 
 
 @torch.no_grad()
-def eval_rouge_autocomplete_3_4(model, loader, tokenizer, device):
-    """
-    Генерирует продолжение для последних 25% текста и считает ROUGE.
-    """
+def eval_rouge_autocomplete_3_4(model, loader, tokenizer, device, max_examples=3):
     model.eval()
     rouge = evaluate.load("rouge")
 
-    predictions: list[str] = []
-    references: list[str] = []
+    predictions = []
+    references = []
+    examples = []
 
-    for batch in tqdm(loader, desc="Evaluating ROUGE", leave=True):
+    for batch in tqdm(loader, desc="Evaluating Rouge", leave=True):
         x = batch["input_ids"].to(device)
         y = batch["targets"].to(device)
         lengths = batch["lengths"].to(device)
@@ -58,7 +55,7 @@ def eval_rouge_autocomplete_3_4(model, loader, tokenizer, device):
             if L <= 2:
                 continue
 
-            # Полная последовательность
+            # вся последовательность
             x_i = x[i, :L]
             y_i = y[i, :L]
             full = torch.cat([x_i, y_i[-1:].clone()], dim=0)
@@ -69,9 +66,6 @@ def eval_rouge_autocomplete_3_4(model, loader, tokenizer, device):
             prompt_len = max(1, int(full_len * 0.75))
             target_len = full_len - prompt_len
             
-            if target_len < 1:
-                continue
-
             prompt = full[:prompt_len]
             ref_tail = full[prompt_len:]
 
@@ -82,7 +76,8 @@ def eval_rouge_autocomplete_3_4(model, loader, tokenizer, device):
             )
 
             gen_tail = gen_full[prompt_len:]
-
+            
+            prompt_text = tokenizer.decode(prompt.tolist(), skip_special_tokens=True).strip()
             pred_text = tokenizer.decode(gen_tail.tolist(), skip_special_tokens=True).strip()
             ref_text = tokenizer.decode(ref_tail.tolist(), skip_special_tokens=True).strip()
 
@@ -90,24 +85,26 @@ def eval_rouge_autocomplete_3_4(model, loader, tokenizer, device):
                 predictions.append(pred_text)
                 references.append(ref_text)
 
-    if not predictions:
-        return {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
+                if len(examples) < max_examples:
+                    examples.append({
+                        "Prompt": prompt_text,
+                        "Reference": ref_text,
+                        "Generated": pred_text,
+                    })
 
-    return rouge.compute(predictions=predictions, references=references)
+    scores = rouge.compute(predictions=predictions, references=references)
+    return scores, examples
 
 
 def main():
-    # 1. Загрузка конфига
     cfg = load_yaml("configs/config.yaml")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 2. Подготовка токенизатора и параметров
     model_name = cfg["tokenizer"]["model_name"]
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     pad_id = tokenizer.pad_token_id
     vocab_size = tokenizer.vocab_size
 
-    # 3. Инициализация модели
     m_cfg = cfg["model"]
     max_len = int(cfg["train"]["max_len"])
     
@@ -121,49 +118,49 @@ def main():
         max_len=max_len,
     ).to(device)
 
-    # 4. Загрузка весов
     save_path = os.path.join(cfg["save"]["save_dir"], cfg["save"]["save_name"])
-    print(f"Loading weights from: {save_path}")
     
     checkpoint = torch.load(save_path, map_location=device)
-    if "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
-    else:
-        model.load_state_dict(checkpoint)
+    model.load_state_dict(checkpoint["model_state_dict"])
 
     model.eval()
 
-    # 5. Загрузка данных (Валидация из конфига)
-    val_csv = cfg["data"]["val_csv"]
+    test_csv = cfg["data"]["test_csv"]
     batch_size = int(cfg["train"]["batch_size"])
     
-    print(f"Evaluating on: {val_csv}")
-    _, val_loader = make_dataloader(
-        val_csv, 
+    _, test_loader = make_dataloader(
+        test_csv, 
         batch_size=batch_size, 
         shuffle=False, 
         max_len=max_len, 
         pad_id=pad_id
     )
 
-    # 6. Расчет Loss
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
-    val_loss = eval_loss(model, val_loader, criterion, device)
-    print(f"Validation Loss: {val_loss:.4f}")
+    test_loss = test_val_loss(model, test_loader, criterion, device)
 
-    # 7. Расчет ROUGE
-    print("Running ROUGE evaluation...")
-    rouge_scores = eval_rouge_autocomplete_3_4(
-        model=model,
-        loader=val_loader,
-        tokenizer=tokenizer,
-        device=device,
-    )
+    rouge_scores, examples_to_print = eval_rouge_autocomplete_3_4(
+    model=model,
+    loader=test_loader,
+    tokenizer=tokenizer,
+    device=device,
+)
+    r1 = rouge_scores.get('rouge1', 0.0)
+    r2 = rouge_scores.get('rouge2', 0.0)
 
-    print("ROUGE Scores:")
-    for k, v in rouge_scores.items():
-        print(f"  {k}: {v:.4f}")
-
+    print(
+        f"Val Loss: {test_loss:.4f} | "
+        f"Rouge1: {r1:.4f} | "
+        f"Rouge2: {r2:.4f}"
+    )  
+    
+    print("Examples:")
+    for i, ex in enumerate(examples_to_print):
+        print(f"        Example {i+1}")
+        print(f"Prompt:    {ex['Prompt']}")
+        print(f"Reference: {ex['Reference']}")
+        print(f"Generated: {ex['Generated']}")
+        print("")
 
 if __name__ == "__main__":
     main()

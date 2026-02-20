@@ -4,11 +4,12 @@ tokenizer:
 data:
   train_csv: data/train.csv
   val_csv: data/val.csv
+  test_csv: data/test.csv
 
 train:
   batch_size: 256
   max_len: 256
-  lr: 0.001
+  lr: 0.01
   epochs: 10
   grad_clip: 1.0
 
@@ -16,7 +17,7 @@ model:
   emb_dim: 128
   hidden_dim: 256
   num_layers: 2
-  dropout: 0.1
+  dropout: 0.2
 
 save:
   save_dir: models
