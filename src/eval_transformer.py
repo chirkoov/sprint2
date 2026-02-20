@@ -90,7 +90,11 @@ def main():
         references_text.append(ref.strip())
         
         if len(examples_to_print) < 3 and len(pred_str) > 5:
-            examples_to_print.append((prompt, ref, pred_str))
+            examples_to_print.append({
+                "Prompt": prompt,
+                "Reference": ref,
+                "Generated": pred_str
+            })
 
     rouge_scores = rouge.compute(predictions=predictions, references=references_text)
   

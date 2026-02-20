@@ -156,6 +156,7 @@ def main():
     
     print("Examples:")
     for i, ex in enumerate(examples_to_print):
+        print("")
         print(f"        Example {i+1}")
         print(f"Prompt:    {ex['Prompt']}")
         print(f"Reference: {ex['Reference']}")
